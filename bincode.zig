@@ -54,7 +54,7 @@ pub fn Option(comptime T: type) type {
 pub fn sizeOf(data: anytype, params: bincode.Params) usize {
     var stream = std.io.countingWriter(std.io.null_writer);
     bincode.write(stream.writer(), data, params) catch unreachable;
-    return @as(usize, @intCast(stream.bytes_written));
+    return @intCast(stream.bytes_written);
 }
 
 pub fn readFromSlice(gpa: std.mem.Allocator, comptime T: type, slice: []const u8, params: bincode.Params) !T {
@@ -174,7 +174,7 @@ pub fn read(gpa: std.mem.Allocator, comptime T: type, reader: anytype, params: b
                 @compileError("Only f{32, 64} floating-point integers may be serialized, but attempted to serialize " ++ @typeName(U) ++ ".");
             }
             const bytes = try reader.readBytesNoEof((info.bits + 7) / 8);
-            return @as(U, @bitCast(bytes));
+            return @bitCast(bytes);
         },
         .ComptimeInt => return bincode.read(gpa, u64, reader, params),
         .Int => |info| {
@@ -190,7 +190,7 @@ pub fn read(gpa: std.mem.Allocator, comptime T: type, reader: anytype, params: b
                             .unsigned => b,
                             .signed => zigzag: {
                                 if (b % 2 == 0) {
-                                    break :zigzag @as(U, @intCast(b / 2));
+                                    break :zigzag @intCast(b / 2);
                                 } else {
                                     break :zigzag ~@as(U, @bitCast(@as(std.meta.Int(.unsigned, info.bits), b / 2)));
                                 }
@@ -423,7 +423,7 @@ pub fn write(writer: anytype, data: anytype, params: bincode.Params) !void {
                     };
 
                     if (z < 251) {
-                        return writer.writeByte(@as(u8, @intCast(z)));
+                        return writer.writeByte(@intCast(z));
                     } else if (z <= std.math.maxInt(u16)) {
                         try writer.writeByte(251);
                         return switch (params.endian) {

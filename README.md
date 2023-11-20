@@ -37,7 +37,7 @@ The zigzag algorithm is defined as follows:
 
 ```zig
 fn zigzag(v: Signed) Unsigned {
-    return if (v < 0) (~@bitCast(Unsigned, v) * 2 + 1) else (@intCast(Unsigned, v) * 2);
+    return if (v < 0) (~@bitCast(v) * 2 + 1) else (@intCast(v) * 2);
 }
 ```
 
