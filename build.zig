@@ -11,6 +11,11 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
 
+    _ = b.addModule("bincode", .{
+        .root_source_file = .{ .path = "src/root.zig" },
+        .imports = &.{},
+    });
+
     b.installArtifact(lib);
 
     const tests = b.addTest(.{
