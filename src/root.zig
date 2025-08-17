@@ -11,15 +11,23 @@ pub const Params = struct {
         .include_fixed_array_length = true,
     };
 
-    pub const standard: Params = .{
+    pub const standard: Params = .default;
+
+    pub const default: Params = .{
         .endian = .little,
         .int_encoding = .fixed,
         .include_fixed_array_length = false,
     };
 
-    endian: std.builtin.Endian = .little,
-    int_encoding: enum { variable, fixed } = .fixed,
-    include_fixed_array_length: bool = false,
+    pub const variable: Params = .{
+        .endian = .little,
+        .int_encoding = .variable,
+        .include_fixed_array_length = false,
+    };
+
+    endian: std.builtin.Endian,
+    int_encoding: enum { variable, fixed },
+    include_fixed_array_length: bool,
 };
 
 /// An optional type whose enum tag is 32 bits wide.
@@ -82,17 +90,17 @@ pub fn read(gpa: std.mem.Allocator, comptime T: type, reader: anytype, params: b
     };
 
     switch (@typeInfo(U)) {
-        .Void => return {},
-        .Bool => return switch (try reader.readByte()) {
+        .void => return {},
+        .bool => return switch (try reader.readByte()) {
             0 => false,
             1 => true,
             else => error.BadBoolean,
         },
-        .Enum => |info| {
-            const tag = try bincode.read(gpa, if (@typeInfo(info.tag_type).Int.bits < 8) u8 else info.tag_type, reader, params);
+        .@"enum" => |info| {
+            const tag = try bincode.read(gpa, if (@typeInfo(info.tag_type).int.bits < 8) u8 else info.tag_type, reader, params);
             return std.meta.intToEnum(U, tag);
         },
-        .Union => |info| {
+        .@"union" => |info| {
             const tag_type = info.tag_type orelse @compileError("Only tagged unions may be read.");
             const raw_tag = try bincode.read(gpa, tag_type, reader, params);
 
@@ -107,7 +115,7 @@ pub fn read(gpa: std.mem.Allocator, comptime T: type, reader: anytype, params: b
 
             return error.UnknownUnionTag;
         },
-        .Struct => |info| {
+        .@"struct" => |info| {
             var data: U = undefined;
             inline for (info.fields) |field| {
                 if (!field.is_comptime) {
@@ -116,14 +124,14 @@ pub fn read(gpa: std.mem.Allocator, comptime T: type, reader: anytype, params: b
             }
             return data;
         },
-        .Optional => |info| {
+        .optional => |info| {
             return switch (try reader.readByte()) {
                 0 => null,
                 1 => try bincode.read(gpa, info.child, reader, params),
                 else => error.BadOptionalBoolean,
             };
         },
-        .Array => |info| {
+        .array => |info| {
             var data: U = undefined;
             if (params.include_fixed_array_length) {
                 const fixed_array_len = try bincode.read(gpa, u64, reader, params);
@@ -136,7 +144,7 @@ pub fn read(gpa: std.mem.Allocator, comptime T: type, reader: anytype, params: b
             }
             return data;
         },
-        .Vector => |info| {
+        .vector => |info| {
             var data: U = undefined;
             if (params.include_fixed_array_length) {
                 const fixed_array_len = try bincode.read(gpa, u64, reader, params);
@@ -149,15 +157,15 @@ pub fn read(gpa: std.mem.Allocator, comptime T: type, reader: anytype, params: b
             }
             return data;
         },
-        .Pointer => |info| {
+        .pointer => |info| {
             switch (info.size) {
-                .One => {
+                .one => {
                     const data = try gpa.create(info.child);
                     errdefer gpa.destroy(data);
                     data.* = try bincode.read(gpa, info.child, reader, params);
                     return data;
                 },
-                .Slice => {
+                .slice => {
                     const entries = try gpa.alloc(info.child, try bincode.read(gpa, usize, reader, params));
                     errdefer gpa.free(entries);
                     for (entries) |*entry| {
@@ -168,16 +176,16 @@ pub fn read(gpa: std.mem.Allocator, comptime T: type, reader: anytype, params: b
                 else => {},
             }
         },
-        .ComptimeFloat => return bincode.read(gpa, f64, reader, params),
-        .Float => |info| {
+        .comptime_float => return bincode.read(gpa, f64, reader, params),
+        .float => |info| {
             if (info.bits != 32 and info.bits != 64) {
                 @compileError("Only f{32, 64} floating-point integers may be serialized, but attempted to serialize " ++ @typeName(U) ++ ".");
             }
             const bytes = try reader.readBytesNoEof((info.bits + 7) / 8);
             return @bitCast(bytes);
         },
-        .ComptimeInt => return bincode.read(gpa, u64, reader, params),
-        .Int => |info| {
+        .comptime_int => return bincode.read(gpa, u64, reader, params),
+        .int => |info| {
             if ((info.bits & (info.bits - 1)) != 0 or info.bits < 8 or info.bits > 256) {
                 @compileError("Only i{8, 16, 32, 64, 128, 256}, u{8, 16, 32, 64, 128, 256} integers may be deserialized, but attempted to deserialize " ++ @typeName(U) ++ ".");
             }
@@ -270,34 +278,34 @@ pub fn read(gpa: std.mem.Allocator, comptime T: type, reader: anytype, params: b
 pub fn readFree(gpa: std.mem.Allocator, value: anytype) void {
     const T = @TypeOf(value);
     switch (@typeInfo(T)) {
-        .Array, .Vector => {
+        .array, .vector => {
             for (value) |element| {
                 bincode.readFree(gpa, element);
             }
         },
-        .Struct => |info| {
+        .@"struct" => |info| {
             inline for (info.fields) |field| {
                 if (!field.is_comptime) {
                     bincode.readFree(gpa, @field(value, field.name));
                 }
             }
         },
-        .Optional => {
+        .optional => {
             if (value) |v| {
                 bincode.readFree(gpa, v);
             }
         },
-        .Union => |info| {
+        .@"union" => |info| {
             inline for (info.fields) |field| {
                 if (value == @field(T, field.name)) {
                     return bincode.readFree(gpa, @field(value, field.name));
                 }
             }
         },
-        .Pointer => |info| {
+        .pointer => |info| {
             switch (info.size) {
-                .One => gpa.destroy(value),
-                .Slice => {
+                .one => gpa.destroy(value),
+                .slice => {
                     for (value) |item| {
                         bincode.readFree(gpa, item);
                     }
@@ -318,10 +326,10 @@ pub fn write(writer: anytype, data: anytype, params: bincode.Params) !void {
     };
 
     switch (@typeInfo(T)) {
-        .Type, .Void, .NoReturn, .Undefined, .Null, .Fn, .Opaque, .Frame, .AnyFrame => return,
-        .Bool => return writer.writeByte(@intFromBool(data)),
-        .Enum => |info| return bincode.write(writer, if (@typeInfo(info.tag_type).Int.bits < 8) @as(u8, @intFromEnum(data)) else @intFromEnum(data), params),
-        .Union => |info| {
+        .type, .void, .noreturn, .undefined, .null, .@"fn", .@"opaque", .frame, .@"anyframe" => return,
+        .bool => return writer.writeByte(@intFromBool(data)),
+        .@"enum" => |info| return bincode.write(writer, if (@typeInfo(info.tag_type).int.bits < 8) @as(u8, @intFromEnum(data)) else @intFromEnum(data), params),
+        .@"union" => |info| {
             try bincode.write(writer, @intFromEnum(data), params);
             inline for (info.fields) |field| {
                 if (data == @field(T, field.name)) {
@@ -330,7 +338,7 @@ pub fn write(writer: anytype, data: anytype, params: bincode.Params) !void {
             }
             return;
         },
-        .Struct => |info| {
+        .@"struct" => |info| {
             var maybe_err: anyerror!void = {};
             inline for (info.fields) |field| {
                 if (!field.is_comptime) {
@@ -341,7 +349,7 @@ pub fn write(writer: anytype, data: anytype, params: bincode.Params) !void {
             }
             return maybe_err;
         },
-        .Optional => {
+        .optional => {
             if (data) |value| {
                 try writer.writeByte(1);
                 try bincode.write(writer, value, params);
@@ -350,7 +358,7 @@ pub fn write(writer: anytype, data: anytype, params: bincode.Params) !void {
             }
             return;
         },
-        .Array, .Vector => {
+        .array, .vector => {
             if (params.include_fixed_array_length) {
                 try bincode.write(writer, std.math.cast(u64, data.len) orelse return error.DataTooLarge, params);
             }
@@ -359,11 +367,11 @@ pub fn write(writer: anytype, data: anytype, params: bincode.Params) !void {
             }
             return;
         },
-        .Pointer => |info| {
+        .pointer => |info| {
             switch (info.size) {
-                .One => return bincode.write(writer, data.*, params),
-                .Many => return bincode.write(writer, std.mem.span(data), params),
-                .Slice => {
+                .one => return bincode.write(writer, data.*, params),
+                .many => return bincode.write(writer, std.mem.span(data), params),
+                .slice => {
                     try bincode.write(writer, std.math.cast(u64, data.len) orelse return error.DataTooLarge, params);
                     for (data) |element| {
                         try bincode.write(writer, element, params);
@@ -373,20 +381,20 @@ pub fn write(writer: anytype, data: anytype, params: bincode.Params) !void {
                 else => {},
             }
         },
-        .ComptimeFloat => return bincode.write(writer, @as(f64, data), params),
-        .Float => |info| {
+        .comptime_float => return bincode.write(writer, @as(f64, data), params),
+        .float => |info| {
             if (info.bits != 32 and info.bits != 64) {
                 @compileError("Only f{32, 64} floating-point integers may be serialized, but attempted to serialize " ++ @typeName(T) ++ ".");
             }
             return writer.writeAll(std.mem.asBytes(&data));
         },
-        .ComptimeInt => {
+        .comptime_int => {
             if (data < 0) {
                 @compileError("Signed comptime integers can not be serialized.");
             }
             return bincode.write(writer, @as(u64, data), params);
         },
-        .Int => |info| {
+        .int => |info| {
             if ((info.bits & (info.bits - 1)) != 0 or info.bits < 8 or info.bits > 256) {
                 @compileError("Only i{8, 16, 32, 64, 128, 256}, u{8, 16, 32, 64, 128, 256} integers may be serialized, but attempted to serialize " ++ @typeName(T) ++ ".");
             }
@@ -449,7 +457,7 @@ test "bincode: decode arbitrary object" {
         14,  150, 112, 155, 39,  143, 181, 58,  12,  16,  228, 56,  110, 253,
         193, 149, 16,  253, 81,  214, 206, 246, 126, 227, 182, 123,
     };
-    const mint = try bincode.readFromSlice(testing.allocator, Mint, &bytes, .{});
+    const mint = try bincode.readFromSlice(testing.allocator, Mint, &bytes, .default);
     defer bincode.readFree(testing.allocator, mint);
 
     try std.testing.expectEqual(@as(u64, 1), mint.supply);
@@ -479,11 +487,11 @@ test "bincode: option serialize and deserialize" {
         .freeze_authority = bincode.Option([32]u8).from([_]u8{ 5, 6, 7, 8 } ** 8),
     };
 
-    try bincode.write(buffer.writer(), expected, .{});
+    try bincode.write(buffer.writer(), expected, .default);
 
     try std.testing.expectEqual(@as(usize, 82), buffer.items.len);
 
-    const actual = try bincode.readFromSlice(testing.allocator, Mint, buffer.items, .{});
+    const actual = try bincode.readFromSlice(testing.allocator, Mint, buffer.items, .default);
     defer bincode.readFree(testing.allocator, actual);
 
     try std.testing.expectEqual(expected, actual);
@@ -493,7 +501,7 @@ test "bincode: serialize and deserialize" {
     var buffer = std.ArrayList(u8).init(testing.allocator);
     defer buffer.deinit();
 
-    inline for (.{ .{}, .{ .int_encoding = .variable }, bincode.Params.legacy, bincode.Params.standard }) |params| {
+    inline for (.{ bincode.Params.default, bincode.Params.variable, bincode.Params.legacy, bincode.Params.standard }) |params| {
         inline for (.{
             @as(i8, std.math.minInt(i8)),
             @as(i16, std.math.minInt(i16)),
@@ -529,7 +537,7 @@ test "bincode: serialize and deserialize" {
         }
     }
 
-    inline for (.{ .{}, bincode.Params.legacy, bincode.Params.standard }) |params| {
+    inline for (.{ bincode.Params.default, bincode.Params.legacy, bincode.Params.standard }) |params| {
         inline for (.{
             "hello world",
             @as([]const u8, "hello world"),
