@@ -476,7 +476,7 @@ test "bincode: option serialize and deserialize" {
         freeze_authority: bincode.Option([32]u8),
     };
 
-    var buffer = std.ArrayList(u8).init(testing.allocator);
+    var buffer = std.array_list.Managed(u8).init(testing.allocator);
     defer buffer.deinit();
 
     const expected: Mint = .{
@@ -498,7 +498,7 @@ test "bincode: option serialize and deserialize" {
 }
 
 test "bincode: serialize and deserialize" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
+    var buffer = std.array_list.Managed(u8).init(testing.allocator);
     defer buffer.deinit();
 
     inline for (.{ bincode.Params.default, bincode.Params.variable, bincode.Params.legacy, bincode.Params.standard }) |params| {
@@ -554,7 +554,7 @@ test "bincode: serialize and deserialize" {
 }
 
 test "bincode: (legacy) serialize an array" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
+    var buffer = std.array_list.Managed(u8).init(testing.allocator);
     defer buffer.deinit();
 
     const Foo = struct {

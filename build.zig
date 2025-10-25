@@ -4,24 +4,14 @@ pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const lib = b.addStaticLibrary(.{
-        .name = "bincode",
+    const mod = b.addModule("bincode", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
-
-    _ = b.addModule("bincode", .{
-        .root_source_file = b.path("src/root.zig"),
-        .imports = &.{},
-    });
-
-    b.installArtifact(lib);
 
     const tests = b.addTest(.{
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = mod,
     });
 
     const run_tests = b.addRunArtifact(tests);
