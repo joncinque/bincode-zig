@@ -60,29 +60,32 @@ pub fn Option(comptime T: type) type {
 }
 
 pub fn sizeOf(data: anytype, params: bincode.Params) usize {
-    var stream = std.io.countingWriter(std.io.null_writer);
-    bincode.write(stream.writer(), data, params) catch unreachable;
-    return @intCast(stream.bytes_written);
+    var buffer: [100]u8 = undefined;
+    var stream = std.Io.Writer.Discarding.init(&buffer);
+    bincode.write(&stream.writer, data, params) catch unreachable;
+    return @intCast(stream.fullCount());
 }
 
 pub fn readFromSlice(gpa: std.mem.Allocator, comptime T: type, slice: []const u8, params: bincode.Params) !T {
-    var stream = std.io.fixedBufferStream(slice);
-    return bincode.read(gpa, T, stream.reader(), params);
+    var stream = std.Io.Reader.fixed(slice);
+    return bincode.read(gpa, T, &stream, params);
 }
 
 pub fn writeToSlice(slice: []u8, data: anytype, params: bincode.Params) ![]u8 {
-    var stream = std.io.fixedBufferStream(slice);
-    try bincode.write(stream.writer(), data, params);
-    return stream.getWritten();
+    var stream = std.Io.Writer.fixed(slice);
+    try bincode.write(&stream, data, params);
+    return slice[0..stream.end];
 }
 
-pub inline fn writeAlloc(gpa: std.mem.Allocator, data: anytype, params: bincode.Params) ![]u8 {
-    const buffer = try gpa.alloc(u8, bincode.sizeOf(data, params));
-    errdefer gpa.free(buffer);
-    return try bincode.writeToSlice(buffer, data, params);
+pub inline fn writeAlloc(gpa: std.mem.Allocator, data: anytype, params: bincode.Params) !std.ArrayList(u8) {
+    const size = bincode.sizeOf(data, params);
+    var buffer = try std.ArrayList(u8).initCapacity(gpa, size);
+    buffer.expandToCapacity();
+    _ = try bincode.writeToSlice(buffer.items, data, params);
+    return buffer;
 }
 
-pub fn read(gpa: std.mem.Allocator, comptime T: type, reader: anytype, params: bincode.Params) !T {
+pub fn read(gpa: std.mem.Allocator, comptime T: type, reader: *std.Io.Reader, params: bincode.Params) !T {
     const U = switch (T) {
         usize => u64,
         isize => i64,
@@ -91,7 +94,7 @@ pub fn read(gpa: std.mem.Allocator, comptime T: type, reader: anytype, params: b
 
     switch (@typeInfo(U)) {
         .void => return {},
-        .bool => return switch (try reader.readByte()) {
+        .bool => return switch (try reader.takeByte()) {
             0 => false,
             1 => true,
             else => error.BadBoolean,
@@ -125,7 +128,7 @@ pub fn read(gpa: std.mem.Allocator, comptime T: type, reader: anytype, params: b
             return data;
         },
         .optional => |info| {
-            return switch (try reader.readByte()) {
+            return switch (try reader.takeByte()) {
                 0 => null,
                 1 => try bincode.read(gpa, info.child, reader, params),
                 else => error.BadOptionalBoolean,
@@ -181,8 +184,8 @@ pub fn read(gpa: std.mem.Allocator, comptime T: type, reader: anytype, params: b
             if (info.bits != 32 and info.bits != 64) {
                 @compileError("Only f{32, 64} floating-point integers may be serialized, but attempted to serialize " ++ @typeName(U) ++ ".");
             }
-            const bytes = try reader.readBytesNoEof((info.bits + 7) / 8);
-            return @bitCast(bytes);
+            const bytes = try reader.takeArray((info.bits + 7) / 8);
+            return @bitCast(bytes.*);
         },
         .comptime_int => return bincode.read(gpa, u64, reader, params),
         .int => |info| {
@@ -192,7 +195,7 @@ pub fn read(gpa: std.mem.Allocator, comptime T: type, reader: anytype, params: b
 
             switch (params.int_encoding) {
                 .variable => {
-                    const b = try reader.readByte();
+                    const b = try reader.takeByte();
                     if (b < 251) {
                         return switch (info.signedness) {
                             .unsigned => b,
@@ -205,7 +208,7 @@ pub fn read(gpa: std.mem.Allocator, comptime T: type, reader: anytype, params: b
                             },
                         };
                     } else if (b == 251) {
-                        const z = try reader.readInt(u16, params.endian);
+                        const z = try reader.takeInt(u16, params.endian);
                         return switch (info.signedness) {
                             .unsigned => std.math.cast(U, z) orelse return error.FailedToCastZZ,
                             .signed => zigzag: {
@@ -217,7 +220,7 @@ pub fn read(gpa: std.mem.Allocator, comptime T: type, reader: anytype, params: b
                             },
                         };
                     } else if (b == 252) {
-                        const z = try reader.readInt(u32, params.endian);
+                        const z = try reader.takeInt(u32, params.endian);
                         return switch (info.signedness) {
                             .unsigned => std.math.cast(U, z) orelse return error.FailedToCastZZ,
                             .signed => zigzag: {
@@ -229,7 +232,7 @@ pub fn read(gpa: std.mem.Allocator, comptime T: type, reader: anytype, params: b
                             },
                         };
                     } else if (b == 253) {
-                        const z = try reader.readInt(u64, params.endian);
+                        const z = try reader.takeInt(u64, params.endian);
                         return switch (info.signedness) {
                             .unsigned => std.math.cast(U, z) orelse return error.FailedToCastZZ,
                             .signed => zigzag: {
@@ -241,7 +244,7 @@ pub fn read(gpa: std.mem.Allocator, comptime T: type, reader: anytype, params: b
                             },
                         };
                     } else if (b == 254) {
-                        const z = try reader.readInt(u128, params.endian);
+                        const z = try reader.takeInt(u128, params.endian);
                         return switch (info.signedness) {
                             .unsigned => std.math.cast(U, z) orelse return error.FailedToCastZZ,
                             .signed => zigzag: {
@@ -253,7 +256,7 @@ pub fn read(gpa: std.mem.Allocator, comptime T: type, reader: anytype, params: b
                             },
                         };
                     } else {
-                        const z = try reader.readInt(u256, params.endian);
+                        const z = try reader.takeInt(u256, params.endian);
                         return switch (info.signedness) {
                             .unsigned => std.math.cast(U, z) orelse return error.FailedToCastZZ,
                             .signed => zigzag: {
@@ -266,7 +269,7 @@ pub fn read(gpa: std.mem.Allocator, comptime T: type, reader: anytype, params: b
                         };
                     }
                 },
-                .fixed => return try reader.readInt(U, params.endian),
+                .fixed => return try reader.takeInt(U, params.endian),
             }
         },
         else => {},
@@ -318,7 +321,7 @@ pub fn readFree(gpa: std.mem.Allocator, value: anytype) void {
     }
 }
 
-pub fn write(writer: anytype, data: anytype, params: bincode.Params) !void {
+pub fn write(writer: *std.Io.Writer, data: anytype, params: bincode.Params) !void {
     const T = switch (@TypeOf(data)) {
         usize => u64,
         isize => i64,
@@ -476,8 +479,8 @@ test "bincode: option serialize and deserialize" {
         freeze_authority: bincode.Option([32]u8),
     };
 
-    var buffer = std.array_list.Managed(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var writer = std.Io.Writer.Allocating.init(testing.allocator);
+    defer writer.deinit();
 
     const expected: Mint = .{
         .authority = bincode.Option([32]u8).from([_]u8{ 1, 2, 3, 4 } ** 8),
@@ -487,7 +490,9 @@ test "bincode: option serialize and deserialize" {
         .freeze_authority = bincode.Option([32]u8).from([_]u8{ 5, 6, 7, 8 } ** 8),
     };
 
-    try bincode.write(buffer.writer(), expected, .default);
+    try bincode.write(&writer.writer, expected, .default);
+    var buffer = writer.toArrayList();
+    defer buffer.deinit(testing.allocator);
 
     try std.testing.expectEqual(@as(usize, 82), buffer.items.len);
 
@@ -498,8 +503,8 @@ test "bincode: option serialize and deserialize" {
 }
 
 test "bincode: serialize and deserialize" {
-    var buffer = std.array_list.Managed(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var writer = std.Io.Writer.Allocating.init(testing.allocator);
+    defer writer.deinit();
 
     inline for (.{ bincode.Params.default, bincode.Params.variable, bincode.Params.legacy, bincode.Params.standard }) |params| {
         inline for (.{
@@ -527,13 +532,14 @@ test "bincode: serialize and deserialize" {
 
             [_]u8{ 0, 1, 2, 3 },
         }) |expected| {
-            try bincode.write(buffer.writer(), expected, params);
-
+            try bincode.write(&writer.writer, expected, params);
+            var buffer = writer.toArrayList();
+            defer buffer.deinit(testing.allocator);
             const actual = try bincode.readFromSlice(testing.allocator, @TypeOf(expected), buffer.items, params);
             defer bincode.readFree(testing.allocator, actual);
 
             try testing.expectEqual(expected, actual);
-            buffer.clearRetainingCapacity();
+            writer.clearRetainingCapacity();
         }
     }
 
@@ -542,34 +548,55 @@ test "bincode: serialize and deserialize" {
             "hello world",
             @as([]const u8, "hello world"),
         }) |expected| {
-            try bincode.write(buffer.writer(), expected, params);
-
+            try bincode.write(&writer.writer, expected, params);
+            var buffer = writer.toArrayList();
+            defer buffer.deinit(testing.allocator);
             const actual = try bincode.readFromSlice(testing.allocator, @TypeOf(expected), buffer.items, params);
             defer bincode.readFree(testing.allocator, actual);
 
             try testing.expectEqualSlices(std.meta.Elem(@TypeOf(expected)), expected, actual);
-            buffer.clearRetainingCapacity();
+            writer.clearRetainingCapacity();
         }
     }
 }
 
 test "bincode: (legacy) serialize an array" {
-    var buffer = std.array_list.Managed(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var writer = std.Io.Writer.Allocating.init(testing.allocator);
+    defer writer.deinit();
 
     const Foo = struct {
         first: u8,
         second: u8,
     };
 
-    try bincode.write(buffer.writer(), [_]Foo{
+    try bincode.write(&writer.writer, [_]Foo{
         .{ .first = 10, .second = 20 },
         .{ .first = 30, .second = 40 },
     }, bincode.Params.legacy);
 
+    var buffer = writer.toArrayList();
+    defer buffer.deinit(testing.allocator);
     try testing.expectEqualSlices(u8, &[_]u8{
         2, 0, 0, 0, 0, 0, 0, 0, // Length of the array
         10, 20, // First Foo
         30, 40, // Second Foo
     }, buffer.items);
+}
+
+test "bincode: serialize alloc" {
+    const Foo = struct {
+        first: u8,
+        second: u8,
+    };
+
+    var data = try bincode.writeAlloc(testing.allocator, [_]Foo{
+        .{ .first = 10, .second = 20 },
+        .{ .first = 30, .second = 40 },
+    }, .default);
+    defer data.deinit(testing.allocator);
+
+    try testing.expectEqualSlices(u8, &[_]u8{
+        10, 20, // First Foo
+        30, 40, // Second Foo
+    }, data.items);
 }
