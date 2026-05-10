@@ -101,7 +101,7 @@ pub fn read(gpa: std.mem.Allocator, comptime T: type, reader: *std.Io.Reader, pa
         },
         .@"enum" => |info| {
             const tag = try bincode.read(gpa, if (@typeInfo(info.tag_type).int.bits < 8) u8 else info.tag_type, reader, params);
-            return std.meta.intToEnum(U, tag);
+            return @enumFromInt(tag);
         },
         .@"union" => |info| {
             const tag_type = info.tag_type orelse @compileError("Only tagged unions may be read.");
@@ -203,7 +203,7 @@ pub fn read(gpa: std.mem.Allocator, comptime T: type, reader: *std.Io.Reader, pa
                                 if (b % 2 == 0) {
                                     break :zigzag @intCast(b / 2);
                                 } else {
-                                    break :zigzag ~@as(U, @bitCast(@as(std.meta.Int(.unsigned, info.bits), b / 2)));
+                                    break :zigzag ~@as(U, @bitCast(@as(@Int(.unsigned, info.bits), b / 2)));
                                 }
                             },
                         };
@@ -408,9 +408,9 @@ pub fn write(writer: *std.Io.Writer, data: anytype, params: bincode.Params) !voi
                         .unsigned => data,
                         .signed => zigzag: {
                             if (data < 0) {
-                                break :zigzag ~@as(std.meta.Int(.unsigned, info.bits), @bitCast(data)) * 2 + 1;
+                                break :zigzag ~@as(@Int(.unsigned, info.bits), @bitCast(data)) * 2 + 1;
                             } else {
-                                break :zigzag @as(std.meta.Int(.unsigned, info.bits), @intCast(data)) * 2;
+                                break :zigzag @as(@Int(.unsigned, info.bits), @intCast(data)) * 2;
                             }
                         },
                     };
